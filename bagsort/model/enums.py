@@ -41,3 +41,29 @@ class Verdict(str, Enum):
     FRESH = "fresh"
     REPLAYED = "replayed"
     ROLLED_OVER = "rolled_over"
+
+
+class ConflictState(str, Enum):
+    """Lifecycle of one barcode conflict case."""
+
+    OPEN = "open"
+    AUTO_ADJUDICATED = "auto_adjudicated"
+    RESOLVED = "resolved"
+
+
+class ConflictDecision(str, Enum):
+    """How a conflict case was adjudicated."""
+
+    PENDING = "pending"
+    REROUTE = "reroute"
+    DISTINCT = "distinct"
+    INCONCLUSIVE = "inconclusive"
+
+
+class ReadStatus(str, Enum):
+    """Attribution state of one committed barcode reading."""
+
+    ATTRIBUTED = "attributed"
+    FROZEN = "frozen"
+    REROUTED = "rerouted"
+    DISTINCT = "distinct"

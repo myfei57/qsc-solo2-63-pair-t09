@@ -117,6 +117,17 @@ def route_table() -> list[Route]:
         Route("GET", "/api/recheck/items", "list the recheck queue", "handle_recheck_items"),
         Route("GET", "/api/recheck/deadline/{flight}", "cutoff for a flight", "handle_recheck_deadline"),
         Route("POST", "/api/recheck/clear", "clear the recheck queue", "handle_recheck_clear"),
+        # -- arbitration --------------------------------------------------
+        Route("POST", "/api/arbitration/read", "commit a reading and adjudicate conflicts", "handle_report_reading"),
+        Route("POST", "/api/arbitration/evidence", "register external conflict evidence", "handle_record_evidence"),
+        Route("GET", "/api/arbitration/reads", "the committed read ledger", "handle_list_reads"),
+        Route("GET", "/api/arbitration/cases", "list conflict cases", "handle_list_cases"),
+        Route("GET", "/api/arbitration/cases/{id}", "read one conflict case", "handle_get_case"),
+        Route("GET", "/api/arbitration/cases/{id}/history", "replayable trail for one case", "handle_case_history"),
+        Route("GET", "/api/arbitration/review", "the manual review queue", "handle_review_queue"),
+        Route("POST", "/api/arbitration/cases/{id}/resolve", "human resolution at the review desk", "handle_resolve_case"),
+        Route("POST", "/api/arbitration/cases/{id}/complete", "finish a review queue entry", "handle_complete_review"),
+        Route("GET", "/api/arbitration/verify", "check read/mapping/queue correspondence", "handle_verify_correspondence"),
         # -- belt ---------------------------------------------------------
         Route("GET", "/api/belt", "carousel and batch", "handle_belt_state"),
         Route("POST", "/api/belt/set", "set carousel and batch", "handle_belt_set"),

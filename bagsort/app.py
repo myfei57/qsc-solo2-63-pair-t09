@@ -10,6 +10,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from bagsort.audit.chain import AuditChain
+from bagsort.arbitration import Arbiter, SortGate
+from bagsort.arbitration.correspondence import verify_correspondence
 from bagsort.belt.belt import Belt
 from bagsort.checkin.desk import Desk
 from bagsort.clock import Clock
@@ -68,6 +70,8 @@ class Plant:
     belt: Belt
     quota: QuotaBook
     audit: AuditChain
+    arbiter: Arbiter
+    gate: SortGate
     report: PlantReport
 
     @property
@@ -98,7 +102,10 @@ class Plant:
         schedule = ScheduleBoard(store, clock)
         chutes = ChuteAssigner(store, clock)
         chute_history = AssignmentHistory(store)
-        sorter = Sorter(store, mapping, chutes, clock, VerdictTracker())
+        audit = AuditChain(store, clock, handling_line())
+        gate = SortGate(store, audit)
+        sorter = Sorter(store, mapping, chutes, clock, VerdictTracker(), gate)
+        arbiter = Arbiter(store, clock, namespace)
         injector = Injector(store, book, sorter, clock)
         quota = QuotaBook(store, clock)
         desk = Desk(store, reader, book, mapping, injector, quota, clock, handling_line())
@@ -106,7 +113,6 @@ class Plant:
         recheck = RecheckQueue(store, book, clock)
         belt = Belt(store, clock, IdFactory("cmd"))
 
-        audit = AuditChain(store, clock, handling_line())
         audit_subscriber = _AuditSubscriber(audit)
         for topic in (
             "bag.checked_in",
@@ -117,6 +123,10 @@ class Plant:
             "chute.assigned",
             "belt.switched",
             "bag.remapped",
+            "barcode.conflicted",
+            "barcode.auto_adjudicated",
+            "barcode.resolved",
+            "barcode.rereported",
         ):
             bus.subscribe(topic, audit_subscriber)
 
@@ -146,6 +156,8 @@ class Plant:
             belt=belt,
             quota=quota,
             audit=audit,
+            arbiter=arbiter,
+            gate=gate,
             report=report,
         )
 
@@ -229,6 +241,82 @@ class Plant:
     def process_recheck(self) -> Bag | None:
         return self.recheck.dequeue()
 
+    # -- barcode conflict arbitration -------------------------------------
+
+    def report_reading(self, barcode: str, flight_id: str):
+        """Commit a reading and let the arbiter rule on any flight conflict."""
+
+        result = self.arbiter.report_reading(barcode, flight_id)
+        if result.outcome == "first":
+            self.bus.publish("bag.checked_in", bag_id=result.read.bag_id, flight_id=flight_id)
+        elif result.outcome == "reroute":
+            self.bus.publish("bag.remapped", bag_id=result.read.bag_id, flight_id=flight_id)
+        elif result.outcome == "distinct":
+            self.bus.publish(
+                "barcode.auto_adjudicated",
+                case_id=result.case.id,
+                barcode=barcode,
+                flight_id=flight_id,
+                decision=result.outcome,
+            )
+        elif result.outcome == "inconclusive":
+            self.bus.publish(
+                "barcode.conflicted",
+                case_id=result.case.id,
+                barcode=barcode,
+                flight_id=flight_id,
+            )
+        # "duplicate" and "rereported" write nothing, so they publish nothing:
+        # re-delivering the same report must leave journal and audit untouched.
+        return result
+
+    def record_evidence(self, barcode: str, kind: str, **kwargs):
+        return self.arbiter.record_evidence(barcode, kind, **kwargs)
+
+    def review_queue(self):
+        return self.arbiter.review_queue()
+
+    def next_review(self):
+        return self.arbiter.next_review()
+
+    def resolve_conflict(
+        self,
+        case_id: str,
+        decision: str,
+        *,
+        operator: str = "review_desk",
+        new_flight_id: str = "",
+        note: str = "",
+    ):
+        already_settled = self.arbiter.case(case_id).state.value != "open"
+        case = self.arbiter.resolve(
+            case_id,
+            decision,
+            operator=operator,
+            new_flight_id=new_flight_id,
+            note=note,
+        )
+        if not already_settled:
+            self.bus.publish(
+                "barcode.resolved",
+                case_id=case.id,
+                barcode=case.barcode,
+                decision=decision,
+            )
+        return case
+
+    def complete_review(self, case_id: str):
+        return self.arbiter.complete_review(case_id)
+
+    def conflict_cases(self):
+        return self.arbiter.cases()
+
+    def conflict_history(self, case_id: str | None = None):
+        return self.arbiter.history(case_id)
+
+    def verify_correspondence(self) -> list[str]:
+        return verify_correspondence(self.store)
+
     def switch_belt(self, carousel: str, batch: int) -> int:
         cleared = self.belt.switch(carousel, batch)
         self.bus.publish("belt.switched", carousel=carousel, batch=batch)
@@ -259,6 +347,10 @@ class _AuditSubscriber:
         "chute.assigned": ("chute_assign", "chute"),
         "belt.switched": ("belt_switch", "belt"),
         "bag.remapped": ("remap", "checkin"),
+        "barcode.conflicted": ("conflict_open", "recheck"),
+        "barcode.auto_adjudicated": ("conflict_auto", "recheck"),
+        "barcode.resolved": ("conflict_resolve", "audit"),
+        "barcode.rereported": ("conflict_rereport", "recheck"),
     }
 
     def __init__(self, audit: AuditChain) -> None:
@@ -271,13 +363,15 @@ class _AuditSubscriber:
         kind, stage = mapping
         subject = str(
             event.payload.get("bag_id")
+            or event.payload.get("case_id")
             or event.payload.get("flight_id")
             or event.payload.get("carousel")
+            or event.payload.get("barcode")
             or ""
         )
         detail = {
             key: value
             for key, value in event.payload.items()
-            if key not in {"bag_id", "flight_id"}
+            if key not in {"bag_id", "flight_id", "case_id"}
         }
         self._audit.record(kind, subject, stage, detail)

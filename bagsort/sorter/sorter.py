@@ -30,12 +30,14 @@ class Sorter:
         chutes: ChuteAssigner,
         clock: Clock,
         verdict: VerdictTracker | None = None,
+        gate: object | None = None,
     ) -> None:
         self._store = store
         self._mapping = mapping
         self._chutes = chutes
         self._clock = clock
         self._verdict = verdict or VerdictTracker()
+        self._gate = gate
         self._log = SortLog(store)
 
     @property
@@ -55,6 +57,12 @@ class Sorter:
     def dispatch(self, bag: Bag, reading: Reading) -> SortRecord:
         if not reading.committed:
             raise ConflictError(f"barcode read for {bag.barcode!r} is not committed")
+        if self._gate is not None:
+            verdict = self._gate.check(bag)
+            if not verdict.allowed:
+                raise ConflictError(
+                    f"bag {bag.id!r} cannot be sorted: {verdict.reason}"
+                )
         if self._log.was_executed(bag.id):
             raise ConflictError(f"bag {bag.id!r} has already been sorted")
         detail = self.route(bag.id)

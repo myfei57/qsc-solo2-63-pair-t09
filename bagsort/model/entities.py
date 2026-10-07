@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field, replace
 from typing import Any
 
-from .enums import BagState, FlightState
+from .enums import BagState, ConflictDecision, ConflictState, FlightState, ReadStatus
 
 
 def _clean(raw: Any) -> Any:
@@ -283,3 +283,152 @@ class AuditEntry:
             digest=str(raw.get("digest", "")),
             at=str(raw.get("at", "")),
         )
+
+
+@dataclass(frozen=True)
+class ReadRecord:
+    """One committed barcode reading and the flight it claimed.
+
+    Reads are an append-only ledger in their own right: the mapping may change
+    while the physical reading that proposed it stays untouched, which is what
+    lets a conflict be replayed read by read later.
+    """
+
+    id: str
+    barcode: str
+    bag_id: str
+    flight_id: str
+    ordinal: int
+    epoch: int
+    case_id: str = ""
+    status: ReadStatus = ReadStatus.ATTRIBUTED
+    at: str = ""
+
+    def as_dict(self) -> dict[str, Any]:
+        return {
+            "id": self.id,
+            "barcode": self.barcode,
+            "bag_id": self.bag_id,
+            "flight_id": self.flight_id,
+            "ordinal": self.ordinal,
+            "epoch": self.epoch,
+            "case_id": self.case_id,
+            "status": self.status.value,
+            "at": self.at,
+        }
+
+    @classmethod
+    def from_dict(cls, raw: dict[str, Any]) -> "ReadRecord":
+        return cls(
+            id=str(raw["id"]),
+            barcode=str(raw.get("barcode", "")),
+            bag_id=str(raw.get("bag_id", "")),
+            flight_id=str(raw.get("flight_id", "")),
+            ordinal=int(raw.get("ordinal", 0)),
+            epoch=int(raw.get("epoch", 0)),
+            case_id=str(raw.get("case_id", "")),
+            status=ReadStatus(raw.get("status", ReadStatus.ATTRIBUTED.value)),
+            at=str(raw.get("at", "")),
+        )
+
+    def evolved(self, **changes: Any) -> "ReadRecord":
+        return replace(self, **changes)
+
+
+@dataclass(frozen=True)
+class Evidence:
+    """External fact an arbiter may use to decide a conflict automatically."""
+
+    barcode: str
+    kind: str
+    from_flight_id: str = ""
+    to_flight_id: str = ""
+    source: str = ""
+    at: str = ""
+
+    def as_dict(self) -> dict[str, Any]:
+        return {
+            "barcode": self.barcode,
+            "kind": self.kind,
+            "from_flight_id": self.from_flight_id,
+            "to_flight_id": self.to_flight_id,
+            "source": self.source,
+            "at": self.at,
+        }
+
+    @classmethod
+    def from_dict(cls, raw: dict[str, Any]) -> "Evidence":
+        return cls(
+            barcode=str(raw["barcode"]),
+            kind=str(raw.get("kind", "")),
+            from_flight_id=str(raw.get("from_flight_id", "")),
+            to_flight_id=str(raw.get("to_flight_id", "")),
+            source=str(raw.get("source", "")),
+            at=str(raw.get("at", "")),
+        )
+
+
+@dataclass(frozen=True)
+class ConflictCase:
+    """One barcode conflict: its readings, adjudication and review linkage."""
+
+    id: str
+    barcode: str
+    claimed_flights: list[str]
+    read_ids: list[str]
+    bag_ids: list[str]
+    state: ConflictState = ConflictState.OPEN
+    decision: ConflictDecision = ConflictDecision.PENDING
+    evidence: list[dict[str, Any]] = field(default_factory=list)
+    decided_by: str = ""
+    reason: str = ""
+    review_id: str = ""
+    reports: int = 1
+    created_at: str = ""
+    resolved_at: str = ""
+    policy: str = ""
+    policy_rationale: str = ""
+
+    def as_dict(self) -> dict[str, Any]:
+        return {
+            "id": self.id,
+            "barcode": self.barcode,
+            "claimed_flights": list(self.claimed_flights),
+            "read_ids": list(self.read_ids),
+            "bag_ids": list(self.bag_ids),
+            "state": self.state.value,
+            "decision": self.decision.value,
+            "evidence": _clean(self.evidence),
+            "decided_by": self.decided_by,
+            "reason": self.reason,
+            "review_id": self.review_id,
+            "reports": self.reports,
+            "created_at": self.created_at,
+            "resolved_at": self.resolved_at,
+            "policy": self.policy,
+            "policy_rationale": self.policy_rationale,
+        }
+
+    @classmethod
+    def from_dict(cls, raw: dict[str, Any]) -> "ConflictCase":
+        return cls(
+            id=str(raw["id"]),
+            barcode=str(raw.get("barcode", "")),
+            claimed_flights=[str(item) for item in raw.get("claimed_flights", [])],
+            read_ids=[str(item) for item in raw.get("read_ids", [])],
+            bag_ids=[str(item) for item in raw.get("bag_ids", [])],
+            state=ConflictState(raw.get("state", ConflictState.OPEN.value)),
+            decision=ConflictDecision(raw.get("decision", ConflictDecision.PENDING.value)),
+            evidence=_clean(raw.get("evidence", [])),
+            decided_by=str(raw.get("decided_by", "")),
+            reason=str(raw.get("reason", "")),
+            review_id=str(raw.get("review_id", "")),
+            reports=int(raw.get("reports", 1)),
+            created_at=str(raw.get("created_at", "")),
+            resolved_at=str(raw.get("resolved_at", "")),
+            policy=str(raw.get("policy", "")),
+            policy_rationale=str(raw.get("policy_rationale", "")),
+        )
+
+    def evolved(self, **changes: Any) -> "ConflictCase":
+        return replace(self, **changes)

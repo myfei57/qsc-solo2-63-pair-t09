@@ -556,6 +556,72 @@ def handle_recheck_clear(server, request: Request) -> Response:
 
 
 # ---------------------------------------------------------------------------
+# arbitration
+# ---------------------------------------------------------------------------
+
+
+def handle_report_reading(server, request: Request) -> Response:
+    result = _plant(server).report_reading(
+        request.required("barcode"), request.required("flight_id")
+    )
+    return json_response(result.as_dict(), status=201)
+
+
+def handle_record_evidence(server, request: Request) -> Response:
+    evidence = _plant(server).record_evidence(
+        request.required("barcode"),
+        request.required("kind"),
+        from_flight_id=request.str_field("from_flight_id"),
+        to_flight_id=request.str_field("to_flight_id"),
+        source=request.str_field("source"),
+    )
+    return json_response(evidence.as_dict(), status=201)
+
+
+def handle_list_reads(server, request: Request) -> Response:
+    barcode = request.query.get("barcode", [""])[0]
+    reads = _plant(server).arbiter.reads(barcode or None)
+    return json_response([read.as_dict() for read in reads])
+
+
+def handle_list_cases(server, request: Request) -> Response:
+    return json_response([case.as_dict() for case in _plant(server).conflict_cases()])
+
+
+def handle_get_case(server, request: Request) -> Response:
+    return json_response(_plant(server).arbiter.case(request.param("id")).as_dict())
+
+
+def handle_case_history(server, request: Request) -> Response:
+    return json_response(_plant(server).conflict_history(request.param("id")))
+
+
+def handle_review_queue(server, request: Request) -> Response:
+    return json_response([case.as_dict() for case in _plant(server).review_queue()])
+
+
+def handle_resolve_case(server, request: Request) -> Response:
+    case = _plant(server).resolve_conflict(
+        request.param("id"),
+        request.required("decision"),
+        operator=request.str_field("operator", "review_desk") or "review_desk",
+        new_flight_id=request.str_field("new_flight_id"),
+        note=request.str_field("note"),
+    )
+    return json_response(case.as_dict())
+
+
+def handle_complete_review(server, request: Request) -> Response:
+    case = _plant(server).complete_review(request.param("id"))
+    return json_response(case.as_dict())
+
+
+def handle_verify_correspondence(server, request: Request) -> Response:
+    violations = _plant(server).verify_correspondence()
+    return json_response({"ok": not violations, "violations": violations})
+
+
+# ---------------------------------------------------------------------------
 # belt
 # ---------------------------------------------------------------------------
 
