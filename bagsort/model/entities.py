@@ -73,6 +73,7 @@ class Bag:
     flight_id: str = ""
     chute_id: str = ""
     state: BagState = BagState.CHECKED_IN
+    weight: float = 0.0
 
     def as_dict(self) -> dict[str, Any]:
         return {
@@ -83,6 +84,7 @@ class Bag:
             "flight_id": self.flight_id,
             "chute_id": self.chute_id,
             "state": self.state.value,
+            "weight": self.weight,
         }
 
     @classmethod
@@ -95,6 +97,7 @@ class Bag:
             flight_id=str(raw.get("flight_id", "")),
             chute_id=str(raw.get("chute_id", "")),
             state=BagState(raw.get("state", BagState.CHECKED_IN.value)),
+            weight=float(raw.get("weight", 0.0)),
         )
 
     def evolved(self, **changes: Any) -> "Bag":

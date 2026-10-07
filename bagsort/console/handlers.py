@@ -24,12 +24,16 @@ def _plant(server):
 
 def handle_health(server, request: Request) -> Response:
     plant = _plant(server)
+    arbitration = plant.arbitration_consistency()
     return json_response(
         {
             "status": "ok",
             "watermark": plant.store.watermark,
             "dirty": plant.store.dirty(),
             "audit_intact": plant.audit.verify(),
+            "arbitration_consistent": arbitration["consistent"],
+            "frozen_barcodes": len(plant.arbitrator.frozen()),
+            "open_conflicts": len(plant.arbitrator.cases(open_only=True)),
         }
     )
 
@@ -270,7 +274,11 @@ def handle_list_bags(server, request: Request) -> Response:
 
 
 def handle_check_in(server, request: Request) -> Response:
-    bag = _plant(server).check_in(request.required("barcode"), request.required("flight_id"))
+    bag = _plant(server).check_in(
+        request.required("barcode"),
+        request.required("flight_id"),
+        request.float_field("weight", 0.0),
+    )
     return json_response(bag.as_dict(), status=201)
 
 
@@ -778,3 +786,133 @@ def handle_export_sort(server, request: Request) -> Response:
 def handle_export_loads(server, request: Request) -> Response:
     records = _plant(server).belt.loads()
     return csv_response(csv_export.render(csv_export.LOAD_COLUMNS, csv_export.load_rows(records)))
+
+
+# ---------------------------------------------------------------------------
+# barcode conflict arbitration
+# ---------------------------------------------------------------------------
+
+
+def _outcome_payload(outcome) -> dict:
+    return {
+        "bag": outcome.bag.as_dict(),
+        "duplicate": outcome.duplicate,
+        "case_id": outcome.case_id,
+        "decision_id": outcome.decision_id,
+        "escalated": outcome.escalated,
+        "verdict": outcome.verdict,
+        "sortable": outcome.settled,
+    }
+
+
+def handle_check_in_adjudicated(server, request: Request) -> Response:
+    plant = _plant(server)
+    outcome = plant.check_in_adjudicated(
+        request.required("barcode"),
+        request.required("flight_id"),
+        request.float_field("weight", 0.0),
+    )
+    return json_response(_outcome_payload(outcome), status=201)
+
+
+def handle_reflight_evidence(server, request: Request) -> Response:
+    directive = _plant(server).record_reflight(
+        request.required("barcode"),
+        request.required("from_flight_id"),
+        request.required("to_flight_id"),
+    )
+    return json_response(directive.as_dict(), status=201)
+
+
+def handle_conflict_report(server, request: Request) -> Response:
+    case = _plant(server).report_conflict(
+        request.required("prior_claim_id"),
+        request.required("latter_claim_id"),
+    )
+    return json_response(case.as_dict(), status=201)
+
+
+def handle_list_claims(server, request: Request) -> Response:
+    barcode = request.query_str("barcode")
+    claims = _plant(server).arbitrator.claims(barcode)
+    return json_response([claim.as_dict() for claim in claims])
+
+
+def handle_list_cases(server, request: Request) -> Response:
+    open_only = request.query_str("status") == "open"
+    cases = _plant(server).arbitrator.cases(open_only)
+    return json_response([case.as_dict() for case in cases])
+
+
+def handle_get_case(server, request: Request) -> Response:
+    case = _plant(server).arbitrator.case(request.param("id"))
+    payload = case.as_dict()
+    decision = _plant(server).arbitrator.decision_for(case.id)
+    payload["decision"] = decision.as_dict() if decision else None
+    return json_response(payload)
+
+
+def handle_resolve_case(server, request: Request) -> Response:
+    decision = _plant(server).resolve_conflict(
+        request.param("id"),
+        request.required("verdict"),
+        request.str_field("decided_by", "operator"),
+        request.str_field("note"),
+    )
+    return json_response(decision.as_dict())
+
+
+def handle_list_decisions(server, request: Request) -> Response:
+    decisions = _plant(server).arbitrator.decisions()
+    return json_response([decision.as_dict() for decision in decisions])
+
+
+def handle_case_decision(server, request: Request) -> Response:
+    decision = _plant(server).arbitrator.decision_for(request.param("id"))
+    if decision is None:
+        return json_response({"error": "not decided"}, status=404)
+    return json_response(decision.as_dict())
+
+
+def handle_barcode_history(server, request: Request) -> Response:
+    barcode = request.param("barcode")
+    return json_response(_plant(server).arbitrator.history(barcode))
+
+
+def handle_frozen_barcodes(server, request: Request) -> Response:
+    plant = _plant(server)
+    return json_response(
+        {
+            "frozen": plant.arbitrator.frozen(),
+            "is_frozen": plant.arbitrator.is_frozen(request.query_str("barcode")),
+        }
+    )
+
+
+def handle_conflict_recheck_items(server, request: Request) -> Response:
+    return json_response([case.as_dict() for case in _plant(server).arbitrator.recheck_items()])
+
+
+def handle_conflict_recheck_next(server, request: Request) -> Response:
+    case = _plant(server).next_conflict_recheck()
+    if case is None:
+        return json_response({"error": "empty"}, status=404)
+    return json_response(case.as_dict())
+
+
+def handle_sortable_bag(server, request: Request) -> Response:
+    plant = _plant(server)
+    bag_id = request.param("id")
+    return json_response(
+        {"bag_id": bag_id, "sortable": plant.is_sortable(bag_id), "reason": plant.sort_block_reason(bag_id)}
+    )
+
+
+def handle_arbitration_consistency(server, request: Request) -> Response:
+    return json_response(_plant(server).arbitration_consistency())
+
+
+def handle_arbitration_policy(server, request: Request) -> Response:
+    from bagsort.arbitration.entities import POLICY_CODE, policy_reason
+
+    return json_response({"code": POLICY_CODE, **policy_reason()})

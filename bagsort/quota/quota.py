@@ -61,13 +61,20 @@ class QuotaBook:
         if limit - count < 0:
             return False
         with self._store.session() as session:
+            self.stage_consume(session, flight_id, count)
+        return True
+
+    def stage_consume(self, session, flight_id: str, count: int = 1) -> None:
+        """Record a consumption inside a caller owned transaction."""
+
+        limit = self._store.state().quota_limits.get(flight_id, UNLIMITED)
+        if limit >= 0:
             session.state.quota_limits[flight_id] = limit - count
             session.record(
                 "quota.adjust",
                 {"flight_id": flight_id, "delta": -count},
                 self._clock.now_iso(),
             )
-        return True
 
     def release(self, flight_id: str, count: int = 1) -> int:
         if count < 0:

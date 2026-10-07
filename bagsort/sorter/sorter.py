@@ -16,6 +16,7 @@ from bagsort.sequence.verdict import VerdictTracker
 from bagsort.store.store import Store
 from bagsort.chute.assigner import ChuteAssigner
 from bagsort.flight.mapping import BagMapping
+from bagsort.arbitration.gate import SortationGate
 from .records import SortLog
 from .route import RouteDetail
 
@@ -37,6 +38,7 @@ class Sorter:
         self._clock = clock
         self._verdict = verdict or VerdictTracker()
         self._log = SortLog(store)
+        self._gate = SortationGate(store)
 
     @property
     def log(self) -> SortLog:
@@ -57,6 +59,7 @@ class Sorter:
             raise ConflictError(f"barcode read for {bag.barcode!r} is not committed")
         if self._log.was_executed(bag.id):
             raise ConflictError(f"bag {bag.id!r} has already been sorted")
+        self._gate.require_sortable(bag)
         detail = self.route(bag.id)
         record = SortRecord(
             bag_id=bag.id,

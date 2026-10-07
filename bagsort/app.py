@@ -10,6 +10,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from bagsort.audit.chain import AuditChain
+from bagsort.arbitration.arbitrator import Arbitrator
+from bagsort.arbitration.gate import SortationGate
 from bagsort.belt.belt import Belt
 from bagsort.checkin.desk import Desk
 from bagsort.clock import Clock
@@ -67,6 +69,8 @@ class Plant:
     recheck: RecheckQueue
     belt: Belt
     quota: QuotaBook
+    arbitrator: Arbitrator
+    gate: SortationGate
     audit: AuditChain
     report: PlantReport
 
@@ -101,7 +105,11 @@ class Plant:
         sorter = Sorter(store, mapping, chutes, clock, VerdictTracker())
         injector = Injector(store, book, sorter, clock)
         quota = QuotaBook(store, clock)
-        desk = Desk(store, reader, book, mapping, injector, quota, clock, handling_line())
+        gate = SortationGate(store)
+        arbitrator = Arbitrator(store, namespace, clock, quota, injector)
+        desk = Desk(
+            store, reader, book, mapping, injector, quota, clock, handling_line(), arbitrator
+        )
         closer = FlightCloser(book)
         recheck = RecheckQueue(store, book, clock)
         belt = Belt(store, clock, IdFactory("cmd"))
@@ -117,6 +125,11 @@ class Plant:
             "chute.assigned",
             "belt.switched",
             "bag.remapped",
+            "barcode.conflict_detected",
+            "barcode.decided",
+            "barcode.escalated",
+            "barcode.unfrozen",
+            "barcode.reflight_recorded",
         ):
             bus.subscribe(topic, audit_subscriber)
 
@@ -145,6 +158,8 @@ class Plant:
             recheck=recheck,
             belt=belt,
             quota=quota,
+            arbitrator=arbitrator,
+            gate=gate,
             audit=audit,
             report=report,
         )
@@ -171,10 +186,109 @@ class Plant:
     def read_barcode(self, barcode: str) -> Reading:
         return self.reader.read(barcode)
 
-    def check_in(self, barcode: str, flight_id: str) -> Bag:
-        bag = self.desk.check_in(barcode, flight_id)
+    def check_in(self, barcode: str, flight_id: str, weight: float = 0.0) -> Bag:
+        bag = self.desk.check_in(barcode, flight_id, weight)
         self.bus.publish("bag.checked_in", bag_id=bag.id, flight_id=flight_id)
         return bag
+
+    def check_in_adjudicated(
+        self, barcode: str, flight_id: str, weight: float = 0.0
+    ):
+        """Submit a read and return the outcome together with its adjudication.
+
+        Publishes the conflict/decision/escalation events exactly once, only
+        when the adjudication actually created them.
+        """
+
+        outcome = self.arbitrator.check_in(barcode, flight_id, weight)
+        self.bus.publish("bag.checked_in", bag_id=outcome.bag.id, flight_id=flight_id)
+        if outcome.case_id:
+            case = self.arbitrator.case(outcome.case_id)
+            self.bus.publish(
+                "barcode.conflict_detected",
+                barcode=case.barcode,
+                case_id=case.id,
+            )
+            if outcome.decision_id:
+                decision = self.arbitrator.decision_for(case.id)
+                self.bus.publish(
+                    "barcode.decided",
+                    barcode=case.barcode,
+                    case_id=case.id,
+                    decision_id=decision.id,
+                    verdict=decision.verdict.value,
+                    decided_by=decision.decided_by,
+                )
+            if outcome.escalated:
+                self.bus.publish(
+                    "barcode.escalated",
+                    barcode=case.barcode,
+                    case_id=case.id,
+                    recheck_item_id=case.recheck_item_id,
+                )
+        return outcome
+
+    def record_reflight(self, barcode: str, from_flight_id: str, to_flight_id: str):
+        directive = self.arbitrator.record_reflight(barcode, from_flight_id, to_flight_id)
+        self.bus.publish(
+            "barcode.reflight_recorded",
+            barcode=directive.barcode,
+            from_flight_id=directive.from_flight_id,
+            to_flight_id=directive.to_flight_id,
+        )
+        return directive
+
+    def report_conflict(self, prior_claim_id: str, latter_claim_id: str):
+        """Idempotently (re)report a conflict between two committed reads."""
+
+        before = {case.id: case for case in self.arbitrator.cases()}
+        case = self.arbitrator.report_conflict(prior_claim_id, latter_claim_id)
+        if case.id not in before:
+            self.bus.publish("barcode.conflict_detected", barcode=case.barcode, case_id=case.id)
+            decision = self.arbitrator.decision_for(case.id)
+            if decision is not None:
+                self.bus.publish(
+                    "barcode.decided",
+                    barcode=case.barcode,
+                    case_id=case.id,
+                    decision_id=decision.id,
+                    verdict=decision.verdict.value,
+                    decided_by=decision.decided_by,
+                )
+            if case.recheck_item_id:
+                self.bus.publish(
+                    "barcode.escalated",
+                    barcode=case.barcode,
+                    case_id=case.id,
+                    recheck_item_id=case.recheck_item_id,
+                )
+        return case
+
+    def resolve_conflict(self, case_id: str, verdict: str, decided_by: str, note: str = ""):
+        decision = self.arbitrator.resolve_case(case_id, verdict, decided_by, note)
+        self.bus.publish(
+            "barcode.decided",
+            barcode=decision.barcode,
+            case_id=decision.case_id,
+            decision_id=decision.id,
+            verdict=decision.verdict.value,
+            decided_by=decision.decided_by,
+        )
+        self.bus.publish("barcode.unfrozen", barcode=decision.barcode, case_id=decision.case_id)
+        return decision
+
+    def next_conflict_recheck(self):
+        case = self.arbitrator.next_recheck()
+        return case
+
+    def is_sortable(self, bag_id: str) -> bool:
+        return self.gate.is_sortable(self.bag(bag_id))
+
+    def sort_block_reason(self, bag_id: str) -> str:
+        return self.gate.reason_blocked(self.bag(bag_id))
+
+    def arbitration_consistency(self) -> dict:
+        return self.arbitrator.consistency()
 
     def cancel_check_in(self, bag_id: str) -> Bag:
         bag = self.desk.cancel(bag_id)
@@ -259,6 +373,11 @@ class _AuditSubscriber:
         "chute.assigned": ("chute_assign", "chute"),
         "belt.switched": ("belt_switch", "belt"),
         "bag.remapped": ("remap", "checkin"),
+        "barcode.conflict_detected": ("barcode_conflict", "recheck"),
+        "barcode.decided": ("barcode_decision", "recheck"),
+        "barcode.escalated": ("barcode_escalation", "recheck"),
+        "barcode.unfrozen": ("barcode_unfreeze", "recheck"),
+        "barcode.reflight_recorded": ("reflight_evidence", "checkin"),
     }
 
     def __init__(self, audit: AuditChain) -> None:
@@ -272,12 +391,13 @@ class _AuditSubscriber:
         subject = str(
             event.payload.get("bag_id")
             or event.payload.get("flight_id")
+            or event.payload.get("barcode")
             or event.payload.get("carousel")
             or ""
         )
         detail = {
             key: value
             for key, value in event.payload.items()
-            if key not in {"bag_id", "flight_id"}
+            if key not in {"bag_id", "flight_id", "barcode"}
         }
         self._audit.record(kind, subject, stage, detail)

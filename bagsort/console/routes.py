@@ -156,6 +156,23 @@ def route_table() -> list[Route]:
         Route("GET", "/api/export/audit.csv", "audit trail as CSV", "handle_export_audit"),
         Route("GET", "/api/export/sort.csv", "sort records as CSV", "handle_export_sort"),
         Route("GET", "/api/export/loads.csv", "load records as CSV", "handle_export_loads"),
+        # -- arbitration --------------------------------------------------
+        Route("POST", "/api/bags/checkin-adjudicated", "check in with conflict adjudication", "handle_check_in_adjudicated"),
+        Route("POST", "/api/arbitration/reflight", "record a re-flight directive", "handle_reflight_evidence"),
+        Route("POST", "/api/arbitration/conflicts/report", "report a read pair conflict", "handle_conflict_report"),
+        Route("GET", "/api/arbitration/claims", "committed barcode reads", "handle_list_claims"),
+        Route("GET", "/api/arbitration/cases", "conflict cases", "handle_list_cases"),
+        Route("GET", "/api/arbitration/decisions", "adjudication history", "handle_list_decisions"),
+        Route("GET", "/api/arbitration/frozen", "frozen barcodes", "handle_frozen_barcodes"),
+        Route("GET", "/api/arbitration/recheck", "conflict recheck queue", "handle_conflict_recheck_items"),
+        Route("GET", "/api/arbitration/recheck/next", "next case awaiting review", "handle_conflict_recheck_next"),
+        Route("GET", "/api/arbitration/policy", "the chosen conflict policy and rationale", "handle_arbitration_policy"),
+        Route("GET", "/api/arbitration/consistency", "read/mapping/queue consistency check", "handle_arbitration_consistency"),
+        Route("GET", "/api/arbitration/cases/{id}", "read one conflict case", "handle_get_case"),
+        Route("POST", "/api/arbitration/cases/{id}/resolve", "manually adjudicate a case", "handle_resolve_case"),
+        Route("GET", "/api/arbitration/cases/{id}/decision", "decision for one case", "handle_case_decision"),
+        Route("GET", "/api/arbitration/barcode/{barcode}/history", "per barcode adjudication timeline", "handle_barcode_history"),
+        Route("GET", "/api/bags/{id}/sortable", "whether a bag may enter sorting", "handle_sortable_bag"),
     ]
 
 

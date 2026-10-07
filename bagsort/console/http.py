@@ -101,6 +101,15 @@ class Request:
     def int_field(self, name: str, default: int = 0) -> int:
         return _to_int(name, self.payload.get(name, default))
 
+    def float_field(self, name: str, default: float = 0.0) -> float:
+        value = self.payload.get(name, default)
+        if isinstance(value, bool):
+            raise RequestError(400, f"field {name} must be a number")
+        try:
+            return float(value)
+        except (TypeError, ValueError) as exc:
+            raise RequestError(400, f"field {name} must be a number") from exc
+
     def bool_field(self, name: str, default: bool = False) -> bool:
         value = self.payload.get(name, default)
         if isinstance(value, bool):

@@ -1,18 +1,21 @@
 """Check-in desk: the entry point of the whole line.
 
-A bag is only committed once the barcode read has been committed, and it is
-only accepted while the flight is open and has allowance left. The desk also
-keeps the bag's flight mapping in step with the bag record so downstream steps
-never have to guess.
+A bag is accepted only while the flight is open and has allowance left. The
+desk delegates the read commit and barcode conflict adjudication to the
+arbitrator, which keeps the bag's flight mapping in step with the read record.
+The desk itself never overwrites one read with another, so a repeated barcode
+cannot silently lose the earlier piece.
 """
 
 from __future__ import annotations
 
+from bagsort.arbitration.arbitrator import Arbitrator
 from bagsort.clock import Clock
 from bagsort.errors import QuotaError
 from bagsort.model.entities import Bag
 from bagsort.model.enums import BagState
 from bagsort.model.errors import unknown_bag
+from bagsort.model.validate import require_text
 from bagsort.store.store import Store
 from bagsort.flight.book import FlightBook
 from bagsort.flight.mapping import BagMapping
@@ -36,6 +39,7 @@ class Desk:
         quota: QuotaBook,
         clock: Clock,
         topology: Topology,
+        arbitrator: Arbitrator,
     ) -> None:
         self._store = store
         self._reader = reader
@@ -45,20 +49,18 @@ class Desk:
         self._quota = quota
         self._clock = clock
         self._topology = topology
+        self._arbitrator = arbitrator
         # The desk refuses to start if the line no longer reads before it injects.
         topology.ensure_before("checkin", "tag")
         topology.ensure_before("tag", "inject")
 
-    def check_in(self, barcode: str, flight_id: str) -> Bag:
+    def check_in(self, barcode: str, flight_id: str, weight: float = 0.0) -> Bag:
+        text = require_text(barcode, "barcode")
         self._book.require_open(flight_id)
         if not self._quota.allowed(flight_id):
             raise QuotaError(f"flight {flight_id!r} has no sorting allowance left")
-        committed = self._reader.commit(self._reader.read(barcode))
-        self._mapping.assign(committed.bag_id, flight_id)
-        if self._quota.is_limited(flight_id):
-            self._quota.consume(flight_id)
-        bag = self._store.state().bags[committed.bag_id]
-        return self._injector.accept(bag)
+        outcome = self._arbitrator.check_in(text, flight_id, weight)
+        return outcome.bag
 
     def check_in_batch(self, entries: list[Entry]) -> list[Bag]:
         return [self.check_in(entry.barcode, entry.flight_id) for entry in entries]

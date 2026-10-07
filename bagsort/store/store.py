@@ -87,6 +87,11 @@ class Store:
             "sort_records": len(state.sort_records),
             "transfer_commands": len(state.transfer_commands),
             "load_records": len(state.load_records),
+            "read_claims": len(state.read_claims),
+            "conflict_cases": len(state.conflict_cases),
+            "decisions": len(state.decisions),
+            "frozen_barcodes": len(state.frozen_barcodes),
+            "conflict_recheck": len(state.conflict_recheck_queue),
             "audit": len(state.audit),
         }
 

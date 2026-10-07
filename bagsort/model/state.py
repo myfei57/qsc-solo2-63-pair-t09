@@ -20,6 +20,12 @@ from .entities import (
     SortRecord,
     TransferCommand,
 )
+from bagsort.arbitration.entities import (
+    ConflictCase,
+    DecisionRecord,
+    ReadClaim,
+    ReflightDirective,
+)
 from bagsort.errors import ValidationError
 
 
@@ -42,6 +48,15 @@ class State:
     belt_carousel: str = ""
     belt_batch: int = 0
     belt_on_carousel: list[str] = field(default_factory=list)
+    # -- barcode conflict arbitration ---------------------------------------
+    read_claims: dict[str, ReadClaim] = field(default_factory=dict)
+    conflict_cases: dict[str, ConflictCase] = field(default_factory=dict)
+    decisions: dict[str, DecisionRecord] = field(default_factory=dict)
+    reflight_directives: dict[tuple[str, str, str], ReflightDirective] = field(
+        default_factory=dict
+    )
+    frozen_barcodes: list[str] = field(default_factory=list)
+    conflict_recheck_queue: list[str] = field(default_factory=list)
 
     def copy(self) -> "State":
         return State(
@@ -60,6 +75,12 @@ class State:
             belt_carousel=self.belt_carousel,
             belt_batch=self.belt_batch,
             belt_on_carousel=list(self.belt_on_carousel),
+            read_claims=dict(self.read_claims),
+            conflict_cases=dict(self.conflict_cases),
+            decisions=dict(self.decisions),
+            reflight_directives=dict(self.reflight_directives),
+            frozen_barcodes=list(self.frozen_barcodes),
+            conflict_recheck_queue=list(self.conflict_recheck_queue),
         )
 
     def as_dict(self) -> dict[str, Any]:
@@ -83,6 +104,21 @@ class State:
                 "batch": self.belt_batch,
                 "on_carousel": list(self.belt_on_carousel),
             },
+            "read_claims": {
+                key: value.as_dict() for key, value in sorted(self.read_claims.items())
+            },
+            "conflict_cases": {
+                key: value.as_dict() for key, value in sorted(self.conflict_cases.items())
+            },
+            "decisions": {
+                key: value.as_dict() for key, value in sorted(self.decisions.items())
+            },
+            "reflight_directives": [
+                self.reflight_directives[key].as_dict()
+                for key in sorted(self.reflight_directives)
+            ],
+            "frozen_barcodes": list(self.frozen_barcodes),
+            "conflict_recheck_queue": list(self.conflict_recheck_queue),
         }
 
 def apply_entry(state: State, kind: str, payload: dict[str, Any]) -> None:
@@ -153,6 +189,38 @@ def apply_entry(state: State, kind: str, payload: dict[str, Any]) -> None:
         state.belt_on_carousel = []
         state.belt_carousel = str(payload.get("carousel", state.belt_carousel))
         state.belt_batch = int(payload.get("batch", state.belt_batch))
+    elif kind == "claim.put":
+        claim = ReadClaim.from_dict(payload["claim"])
+        state.read_claims[claim.id] = claim
+    elif kind == "reflight.record":
+        directive = ReflightDirective.from_dict(payload["directive"])
+        state.reflight_directives[
+            (directive.barcode, directive.from_flight_id, directive.to_flight_id)
+        ] = directive
+    elif kind == "case.put":
+        case = ConflictCase.from_dict(payload["case"])
+        state.conflict_cases[case.id] = case
+    elif kind == "barcode.freeze":
+        barcode = str(payload["barcode"])
+        if barcode not in state.frozen_barcodes:
+            state.frozen_barcodes.append(barcode)
+    elif kind == "barcode.unfreeze":
+        barcode = str(payload["barcode"])
+        state.frozen_barcodes = [item for item in state.frozen_barcodes if item != barcode]
+    elif kind == "decision.put":
+        decision = DecisionRecord.from_dict(payload["decision"])
+        state.decisions[decision.id] = decision
+    elif kind == "conflict_recheck.enqueue":
+        item_id = str(payload["item_id"])
+        if item_id not in state.conflict_recheck_queue:
+            state.conflict_recheck_queue.append(item_id)
+    elif kind == "conflict_recheck.dequeue":
+        item_id = str(payload["item_id"])
+        state.conflict_recheck_queue = [
+            item for item in state.conflict_recheck_queue if item != item_id
+        ]
+    elif kind == "mapping.remove":
+        state.mappings.pop(str(payload["bag_id"]), None)
     else:  # pragma: no cover - guards against a typo in a new command kind
         raise ValidationError(f"unknown journal command {kind!r}")
 

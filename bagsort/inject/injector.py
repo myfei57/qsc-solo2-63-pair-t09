@@ -24,16 +24,15 @@ class Injector:
         self._sorter = sorter
         self._clock = clock
 
-    def accept(self, bag: Bag) -> Bag:
-        """Take custody of a checked-in bag."""
+    def stage_accept(self, session, bag: Bag) -> Bag:
+        """Mark a bag injected inside a caller owned transaction."""
 
         updated = bag.evolved(state=BagState.INJECTED)
-        with self._store.session() as session:
-            session.state.bags[updated.id] = updated
-            session.record("bag.put", {"bag": updated.as_dict()}, self._clock.now_iso())
-            session.record(
-                "counter.add", {"name": "inject.accepted", "delta": 1}, self._clock.now_iso()
-            )
+        session.state.bags[updated.id] = updated
+        session.record("bag.put", {"bag": updated.as_dict()}, self._clock.now_iso())
+        session.record(
+            "counter.add", {"name": "inject.accepted", "delta": 1}, self._clock.now_iso()
+        )
         return updated
 
     def queue(self, flight_id: str) -> list[Bag]:
